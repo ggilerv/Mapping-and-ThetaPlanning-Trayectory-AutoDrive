@@ -12,6 +12,20 @@ interpolacion con reintento verificando colisiones, cada vez con mas puntos
 de control hasta que la curva completa no caiga sobre ningun obstaculo) para
 suavizarlo.
 
+Como cada uno de los 8 tramos se planifica por separado (ver
+plan_track_path()), la direccion de llegada a un checkpoint y la direccion
+de salida del siguiente tramo no tienen por que coincidir -- en dos de los
+checkpoints de esta pista, ambos caen sobre curvas muy cerradas, eso se nota
+como un vertice/pico marcado en la trayectoria suavizada, porque la spline
+de interpolacion esta obligada a pasar exactamente por ese punto. Por eso,
+antes de la B-Spline se aplica un pre-redondeo de esquinas (algoritmo de
+Chaikin, chaikin_smooth() mas abajo) sobre el camino crudo completo:
+reemplaza cada vertice por dos puntos mas cercanos al segmento que lo forma,
+lo que suaviza cualquier vertice marcado (incluidos los empalmes entre
+tramos) antes de que la spline tenga que pasar por ahi. Solo se usa para la
+trayectoria suavizada -- la comparacion "cruda" sigue siendo la salida cruda
+real de Theta*, sin este paso.
+
 Guarda:
   - waypoints/theta_star_waypoints_smooth.csv  (trayectoria final, la que
     publica global_path_publisher.py para la visualizacion en el simulador)
@@ -29,6 +43,35 @@ from planning_utils import (  # noqa: E402
     smooth_path_safe, resample_by_arclength, open_loop_gap, save_waypoints_csv,
 )
 from generate_trajectory import plan_track_path, save_overlay_plot, SPAWN_XY  # noqa: E402
+
+
+def chaikin_smooth(path_xy, iterations=2):
+    """Chaikin corner-cutting, keeping both endpoints exactly fixed: each
+    iteration replaces every interior vertex pair (p0, p1) with two new
+    points at 1/4 and 3/4 along the segment between them. path_xy is a full
+    lap that starts and ends at the same point (the vehicle's spawn,
+    anchor_checkpoints() in generate_trajectory.py) -- that point must stay
+    exact (the delivered trajectory is required to start precisely where the
+    car spawns), so this does NOT wrap around and round it like any other
+    vertex; only the checkpoint junctions strictly *between* start and end
+    get rounded. Each new point is a convex combination of two original,
+    consecutive points, so the rounded polyline never swings wider than the
+    original one did -- it only cuts corners inward, it can't introduce a
+    new collision that wasn't already there (smooth_path_safe() still
+    re-verifies this afterwards regardless).
+    """
+    pts = list(path_xy)
+    for _ in range(iterations):
+        n = len(pts)
+        new_pts = [pts[0]]
+        for i in range(n - 1):
+            p0 = pts[i]
+            p1 = pts[i + 1]
+            new_pts.append((0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1]))
+            new_pts.append((0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1]))
+        new_pts.append(pts[-1])
+        pts = new_pts
+    return pts
 
 
 def save_comparison_plot(map_bin, resolution, origin, raw_waypoints, smooth_waypoints, out_png):
@@ -66,7 +109,11 @@ def main():
     parser.add_argument("--checkpoints", type=int, default=8)
     parser.add_argument("--segments", type=int, default=8)
     parser.add_argument("--penalty-weight", type=float, default=3.0)
-    parser.add_argument("--spacing", type=float, default=0.3)
+    parser.add_argument("--spacing", type=float, default=0.15,
+                         help="Espaciado final [m]. Mas fino que el de la ruta cruda a proposito: en la "
+                              "curva mas cerrada, un espaciado grueso deja muy pocos waypoints para "
+                              "representar el arco y las lineas rectas entre ellos se ven como un vertice, "
+                              "aun cuando la curva de fondo (B-Spline) sea continua")
     parser.add_argument("--smooth-step", type=float, default=0.0008,
                          help="Densidad de la curva suavizada (1/step puntos sobre la vuelta)")
     parser.add_argument("--start-x", type=float, default=SPAWN_XY[0],
@@ -75,6 +122,9 @@ def main():
                          help="Punto de inicio/fin de la vuelta -- coordenada Y del spawn del auto en AutoDRIVE")
     parser.add_argument("--gap", type=float, default=2.0,
                          help="Separacion [m] entre el final y el inicio de la vuelta (no la cierra del todo)")
+    parser.add_argument("--corner-rounding-iterations", type=int, default=2,
+                         help="Iteraciones de pre-redondeo de esquinas (Chaikin) antes de la B-Spline; "
+                              "0 lo desactiva")
     parser.add_argument("--outdir", default=str(share / "waypoints"))
     args = parser.parse_args()
 
@@ -86,7 +136,12 @@ def main():
     raw_waypoints = resample_by_arclength(world_path, args.spacing)
     raw_waypoints = open_loop_gap(raw_waypoints, args.spacing, gap=args.gap)
 
-    smoothed, mcp_used = smooth_path_safe(world_path, map_bin, resolution, origin, step=args.smooth_step)
+    rounded_path = world_path
+    if args.corner_rounding_iterations > 0:
+        rounded_path = chaikin_smooth(world_path, iterations=args.corner_rounding_iterations)
+        print(f"Pre-redondeo de esquinas (Chaikin): {len(world_path)} -> {len(rounded_path)} puntos")
+
+    smoothed, mcp_used = smooth_path_safe(rounded_path, map_bin, resolution, origin, step=args.smooth_step)
     print(f"Theta* suavizado: {len(smoothed)} puntos (max_control_points={mcp_used})")
 
     smooth_waypoints = resample_by_arclength(smoothed, args.spacing)

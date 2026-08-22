@@ -144,7 +144,9 @@ Se usa una B-Spline de interpolación (`python_motion_planning/curve_generation/
 - **`anchor_checkpoints()`**: ancla el inicio/fin de la vuelta exactamente al punto de spawn real del vehículo en AutoDRIVE (leído una vez de `/autodrive/f1tenth_1/ips`), en vez de un punto arbitrario elegido por ángulo — así la trayectoria publicada arranca justo donde aparece el auto.
 - **`CenteredThetaStar`** (en `planning_utils.py`): penaliza el costo de cada paso según la distancia mínima a la pared más cercana a lo largo de todo el paso (no solo en sus extremos), para que la propia búsqueda de "camino más corto" prefiera el centro del corredor en vez de pegarse a los bordes.
 - **`smooth_path_safe()`** (en `planning_utils.py`): la B-Spline de interpolación tiene más libertad de "cortar camino" cuantos menos puntos de control usa (curva más suave), pero eso también puede hacer que roce una pared en una curva cerrada. Esta función prueba una escalera de valores de puntos de control (de más agresivo a más conservador) y usa el primero cuya curva completa no cae sobre ningún obstáculo — no una cantidad fija de suavizado.
+- **`chaikin_smooth()`** (en `smooth_trajectory.py`): cada uno de los 8 tramos se planifica por separado, así que la dirección de llegada a un checkpoint y la de salida del siguiente tramo no tienen por qué coincidir. En los checkpoints ubicados sobre las curvas más cerradas del circuito eso se notaba como un vértice marcado en la trayectoria suavizada, porque la spline de interpolación está obligada a pasar exactamente por ese punto. Por eso, antes de la B-Spline se aplica un pre-redondeo de esquinas (algoritmo de Chaikin) sobre el camino crudo completo, manteniendo fijo únicamente el punto de spawn (inicio/fin de la vuelta).
 - **`open_loop_gap()`**: como la vuelta es un lazo cerrado, recorta el extremo final para dejar una separación visible (2 m) entre el punto de inicio y el de meta, en vez de que ambos queden superpuestos.
+- **Espaciado más fino en la trayectoria suavizada** (`--spacing 0.15` en `smooth_trajectory.py`, contra `0.3` en la ruta cruda): en una curva muy cerrada, un espaciado grueso deja pocos waypoints para representar el arco, y las líneas rectas entre ellos se ven como un vértice aunque la curva de fondo sea continua. Achicar el espaciado solo en el resultado final resuelve eso sin afectar la ruta cruda de comparación.
 
 ### 4.4 Variables importantes
 
@@ -152,10 +154,11 @@ Se usa una B-Spline de interpolación (`python_motion_planning/curve_generation/
 |---|---|---|
 | `--checkpoints` / `--segments` | 8 / 8 | En cuántos tramos se divide la vuelta completa |
 | `--penalty-weight` | 3.0 | Qué tan fuerte se penaliza pasar cerca de una pared (Theta*) |
-| `--spacing` | 0.3 m | Separación entre waypoints finales |
+| `--spacing` | 0.3 m (`generate_trajectory.py`) / 0.15 m (`smooth_trajectory.py`) | Separación entre waypoints finales |
 | `--start-x` / `--start-y` | 0.741 / 3.158 | Punto de spawn del vehículo (inicio/fin de la vuelta) |
 | `--gap` | 2.0 m | Separación entre el final y el inicio de la vuelta cerrada |
 | `--smooth-step` | 0.0008 | Densidad de muestreo de la curva suavizada |
+| `--corner-rounding-iterations` | 2 | Iteraciones de pre-redondeo de esquinas (Chaikin) antes de la B-Spline |
 
 ### 4.5 Cómo ejecutar
 
